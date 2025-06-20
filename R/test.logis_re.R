@@ -1,19 +1,14 @@
-#' Conduct hypothesis testing for provider effects from a fitted `linear_fe` object
+#' Conduct hypothesis testing for provider effects from a fitted `logis_re` object
 #'
-#' Conduct hypothesis tests on provider effects and identify outlying providers for a fixed effect linear model.
+#' Conduct hypothesis tests on provider effects and identify outlying providers for a random effect logistic model.
 #'
-#' @param fit a model fitted from \code{linear_fe}.
+#' @param fit a model fitted from \code{logis_re}.
 #' @param parm specifies a subset of providers for which confidence intervals are to be given.
 #' By default, all providers are included. The class of `parm` should match the class of the provider IDs.
 #' @param level the confidence level during the hypothesis test, meaning a significance level of \eqn{1 - \text{level}}.
 #' The default value is 0.95.
-#' @param null a character string or a number defining the null hypothesis for the provider effects.
-#' The default value is \code{"median"}. The possible values are:
-#' \itemize{
-#'   \item{\code{"median"}}: The median of the provider effect estimates (\eqn{\hat{\gamma}_i}).
-#'   \item{\code{"mean"}}: The weighted average of the provider effect estimates (\eqn{\hat{\gamma}_i}), where the weights correspond to the sample size of each provider.
-#'   \item{numeric}: A user-defined numeric value representing the null hypothesis.
-#' }
+#' @param null a number defining the null hypothesis for the provider effects.
+#' The default value is 0.
 #' @param alternative a character string specifying the alternative hypothesis, must be one of
 #' \code{"two.sided"} (default), \code{"greater"}, or \code{"less"}.
 #' @param \dots additional arguments that can be passed to the function.
@@ -33,58 +28,53 @@
 #' Outlying providers are determined by the test statistic falling beyond the threshold based on the significance level \eqn{1 - \text{level}}.
 #'
 #' @examples
-#' data(ExampleDataLinear)
-#' outcome <- ExampleDataLinear$Y
-#' covar <- ExampleDataLinear$Z
-#' ProvID <- ExampleDataLinear$ProvID
-#' fit_linear <- linear_fe(Y = outcome, Z = covar, ProvID = ProvID)
-#' test(fit_linear)
+#' data(ExampleDataBinary)
+#' outcome <- ExampleDataBinary$Y
+#' ProvID <- ExampleDataBinary$ProvID
+#' covar <- ExampleDataBinary$Z
+#' fit_re <- logis_re(Y = outcome, Z = covar, ProvID = ProvID)
+#' test(fit_re)
 #'
-#' @importFrom stats pt qt median
+#' @importFrom stats pnorm qnorm pt qt
 #'
-#' @exportS3Method test linear_fe
+#' @exportS3Method test logis_re
 
-test.linear_fe <- function(fit, parm, level = 0.95, null = "median", alternative = "two.sided", ...) {
+test.logis_re <- function(fit, parm, level = 0.95, null = 0, alternative = "two.sided", ...) {
+  model <- attributes(fit)$model
+
   alpha <- 1 - level
 
   data <- fit$data_include
+  Y.char <- fit$char_list$Y.char
   ProvID.char <- fit$char_list$ProvID.char
-  gamma <- fit$coefficient$gamma
-  se.gamma <- sqrt(fit$variance$gamma)
-  n.prov <- sapply(split(data[, fit$char_list$Y.char], data[, ProvID.char]), length)
-  m <- length(fit$coefficient$gamma)
-  p <- length(fit$coefficient$beta)
-  n <- nrow(fit$data_include)
-  gamma.null <- ifelse(null=="median", median(gamma),
-                       ifelse(null=="mean", sum(n.prov*gamma)/n,
-                              ifelse(class(null)=="numeric", null[1],
-                                     stop("Argument 'null' NOT as required!",call.=F))))
+  Z.char <- fit$char_list$Z.char
+  n.prov <- sapply(split(data[, Y.char], data[, ProvID.char]), length)
 
+  postVar <- matrix(attr(ranef(model, condVar = TRUE)[[ProvID.char]], "postVar")[1,1,], ncol = 1)
+  rownames(postVar) <- rownames(fit$coefficient$RE)
+  colnames(postVar) <- "PostVar"
+  PostSE <- sqrt(postVar)
 
-  # test statistics
-  stat <- (gamma - gamma.null)/se.gamma
-
-  prob <- switch(attributes(fit$variance$gamma)$description,
-                 "simplified" = pnorm(stat, lower.tail=F),
-                 "full" = pt(stat, df = n - m - p, lower.tail = F))
+  Z_score <- (fit$coefficient$RE - null)/PostSE
+  p <- pnorm(Z_score, lower.tail=F)
 
   if (alternative == "two.sided") {
-    flag <- ifelse(prob < alpha/2, 1, ifelse(prob <= 1-alpha/2, 0, -1))
-    p_value <- 2 * pmin(prob, 1-prob)
+    p_value <- 2 * pmin(p, 1-p)
+    flag <- ifelse(p < alpha/2, 1, ifelse(p > 1 - alpha/2, -1, 0))
   }
   else if (alternative == "greater") {
-    flag <- ifelse(prob < alpha, 1, 0)
-    p_value <- prob
+    p_value <- p
+    flag <- ifelse(p < alpha, 1, 0)
   }
   else if (alternative == "less") {
-    flag <- ifelse(1 - prob < alpha, -1, 0)
-    p_value <- 1 - prob
+    p_value <- 1 - p
+    flag <- ifelse(1 - p < alpha, -1, 0)
   }
   else {
     stop("Argument 'alternative' should be one of 'two.sided', 'less', 'greater'")
   }
 
-  result <- data.frame(flag = factor(flag), p = p_value, stat = stat, Std.Error = se.gamma)
+  result <- data.frame(flag = factor(flag), p = p_value, stat = Z_score, Std.Error = PostSE)
   colnames(result) <- c("flag", "p value", "stat", "Std.Error")
 
   if (missing(parm)) {
@@ -92,7 +82,7 @@ test.linear_fe <- function(fit, parm, level = 0.95, null = "median", alternative
     return(result)
   }
   else {
-    if (is.integer(parm)) {  #avoid "integer" class
+    if (is.numeric(parm)) {  #avoid "integer" class
       parm <- as.numeric(parm)
     }
     if (class(parm) == class(data[, ProvID.char])) {
